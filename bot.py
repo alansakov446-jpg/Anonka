@@ -17,7 +17,6 @@ SPECIAL_CHAR = "♮"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# временное хранилище сообщений
 anon_messages = {}
 
 
@@ -27,11 +26,11 @@ async def inline_handler(inline_query: InlineQuery):
     text = inline_query.query.strip()
     user = inline_query.from_user
 
-    # Проверяем символ ♮ у отправителя
-    if SPECIAL_CHAR not in (user.username or "") and SPECIAL_CHAR not in (user.first_name or ""):
+    # ✅ Проверяем ТОЛЬКО имя
+    if SPECIAL_CHAR not in (user.first_name or ""):
         return
 
-    # Ожидаем формат: @username текст
+    # Формат: @username текст
     if not text.startswith("@") or " " not in text:
         return
 
@@ -41,7 +40,7 @@ async def inline_handler(inline_query: InlineQuery):
     callback_id = str(uuid.uuid4())
 
     anon_messages[callback_id] = {
-        "text": message[:200],  # ограничение Telegram alert
+        "text": message[:200],
         "target_username": target_username.lower()
     }
 
@@ -80,14 +79,13 @@ async def open_message(callback: CallbackQuery):
 
     data = anon_messages[callback_id]
 
-    # Проверка что нажал нужный пользователь
+    # Проверяем что нажал нужный username
     if not user.username or user.username.lower() != data["target_username"]:
         await callback.answer("❌ Это сообщение не для тебя", show_alert=True)
         return
 
     await callback.answer(f"💌 {data['text']}", show_alert=True)
 
-    # можно удалить после открытия
     del anon_messages[callback_id]
 
 
