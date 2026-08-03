@@ -37,7 +37,7 @@ from storage import db as storage
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("username_hunter_bot")
 
-BOT_VERSION = "1.5.0"
+BOT_VERSION = "1.5.1"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
