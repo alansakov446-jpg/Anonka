@@ -1,7 +1,6 @@
+# -*- coding: utf-8 -*-
 import os
 
-# Можно либо создать файл .env рядом с ботом со строкой BOT_TOKEN=..., 
-# либо просто задать переменную окружения BOT_TOKEN перед запуском.
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -16,16 +15,26 @@ if not BOT_TOKEN:
         "или задай переменную окружения BOT_TOKEN."
     )
 
-# Задержка между проверками юзернеймов (в секундах).
-# Не ставь слишком маленькое значение — t.me и fragment.com могут начать банить IP за частые запросы.
-CHECK_DELAY_SECONDS = 1.3
+# --- настройки параллельности ---
+# Количество одновременных проверок (больше → быстрее, но Telegram/Fragment
+# могут начать отбивать запросы или давать капчу на Fragment).
+CONCURRENCY = int(os.getenv("CONCURRENCY", "5"))
 
-# Сколько находок показывать на одной "странице" в живом сообщении поиска
-# и в разделе "История находок" (постраничная навигация ⬅️➡️).
-PAGE_SIZE_LIVE = 6
-PAGE_SIZE_HISTORY = 10
+# Пауза между запуском новых проверок внутри одного воркера (секунды).
+# При CONCURRENCY=5 и CHECK_DELAY_SECONDS=0.25 выходит примерно 20 проверок/сек.
+CHECK_DELAY_SECONDS = float(os.getenv("CHECK_DELAY_SECONDS", "0.25"))
 
-# Опционально: адрес HTTP-прокси, если хостинг требует ходить в интернет
-# только через него (например некоторые бесплатные тарифы). Если не нужно —
-# просто не задавай эту переменную окружения, всё будет работать как обычно.
+# --- пагинация ---
+# Сколько находок на одной странице живого статуса поиска.
+PAGE_SIZE_LIVE = int(os.getenv("PAGE_SIZE_LIVE", "6"))
+# То же — для истории.
+PAGE_SIZE_HISTORY = int(os.getenv("PAGE_SIZE_HISTORY", "10"))
+# Максимальная длина одного сообщения Telegram (оставляем запас под заголовки/кнопки).
+MAX_MESSAGE_CHARS = 3500
+
+# --- прокси ---
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
+
+# --- БД ---
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+SQLITE_PATH = os.getenv("SQLITE_PATH", "bot_data.db").strip()
