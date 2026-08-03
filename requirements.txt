@@ -1,5 +1,4 @@
-aiogram>=3.4,<4
-aiohttp>=3.9
-python-dotenv>=1.0
-cloudscraper>=1.2
-gradio>=4.0
+aiogram>=3.0.0
+asyncpg>=0.28.0
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0
