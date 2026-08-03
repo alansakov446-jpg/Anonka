@@ -1,90 +1,150 @@
-# -*- coding: utf-8 -*-
-"""
-Постоянное хранилище найденных юзернеймов (SQLite, файл рядом с ботом).
-
-Зачем это отдельно от оперативной памяти:
- - при перезапуске бота (обновление кода, перезагрузка сервера) история
-   находок не должна теряться;
- - позволяет не показывать (и не перепроверять) один и тот же юзернейм
-   дважды, даже если пользователь запускал поиск много раз в разные дни;
- - даёт возможность полноценно листать историю страницами и выгружать
-   всё одним файлом.
-"""
-
 import os
 import sqlite3
-import threading
-from datetime import datetime, timezone
+import json
+import logging
+from typing import Dict, Any, Optional
 
-_DB_DIR = os.getenv("DB_DIR", ".")
-DB_PATH = os.path.join(_DB_DIR, "username_hunter.db")
+try:
+    import asyncpg
+    HAS_ASYNCPG = True
+except ImportError:
+    HAS_ASYNCPG = False
 
-_lock = threading.Lock()
-_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-_conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS found_usernames (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER NOT NULL,
-        username TEXT NOT NULL,
-        score INTEGER NOT NULL,
-        found_at TEXT NOT NULL,
-        UNIQUE(chat_id, username)
-    )
-    """
-)
-_conn.commit()
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+class DatabaseManager:
+    def __init__(self):
+        self.is_postgres = bool(DATABASE_URL and HAS_ASYNCPG)
 
-def add_found(chat_id: int, username: str, score: int) -> None:
-    with _lock:
-        _conn.execute(
-            "INSERT OR IGNORE INTO found_usernames (chat_id, username, score, found_at) VALUES (?, ?, ?, ?)",
-            (chat_id, username, score, datetime.now(timezone.utc).isoformat()),
-        )
-        _conn.commit()
+    async def init_db(self):
+        """Автоматическое создание всех нужных таблиц"""
+        if self.is_postgres:
+            try:
+                conn = await asyncpg.connect(DATABASE_URL)
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        user_id BIGINT PRIMARY KEY,
+                        check_limit INT DEFAULT 1000,
+                        no_mono BOOLEAN DEFAULT FALSE,
+                        clean_output BOOLEAN DEFAULT FALSE,
+                        silent_mode BOOLEAN DEFAULT FALSE
+                    );
+                    
+                    CREATE TABLE IF NOT EXISTS calibration_data (
+                        user_id BIGINT PRIMARY KEY,
+                        vowel_weight FLOAT DEFAULT 1.0,
+                        consonant_penalty FLOAT DEFAULT 1.0,
+                        rhythm_bonus FLOAT DEFAULT 1.0,
+                        is_completed BOOLEAN DEFAULT FALSE,
+                        history TEXT DEFAULT '[]'
+                    );
 
+                    CREATE TABLE IF NOT EXISTS watchlist (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT,
+                        username TEXT UNIQUE,
+                        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
 
-def already_known(chat_id: int, username: str) -> bool:
-    with _lock:
-        cur = _conn.execute(
-            "SELECT 1 FROM found_usernames WHERE chat_id = ? AND username = ? LIMIT 1",
-            (chat_id, username),
-        )
-        return cur.fetchone() is not None
+                    CREATE TABLE IF NOT EXISTS findings (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT,
+                        username TEXT,
+                        found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                ''')
+                await conn.close()
+                logging.info("✅ Успешно подключено к облаку Supabase (PostgreSQL)")
+                return
+            except Exception as e:
+                logging.error(f"⚠️ Не удалось подключиться к PostgreSQL: {e}. Переходим на SQLite.")
+                self.is_postgres = False
 
+        self._init_sqlite()
 
-def count(chat_id: int) -> int:
-    with _lock:
-        cur = _conn.execute("SELECT COUNT(*) FROM found_usernames WHERE chat_id = ?", (chat_id,))
-        return cur.fetchone()[0]
+    def _init_sqlite(self):
+        """Фоллбек-инициализация SQLite"""
+        with sqlite3.connect("bot_data.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    check_limit INTEGER DEFAULT 1000,
+                    no_mono BOOLEAN DEFAULT 0,
+                    clean_output BOOLEAN DEFAULT 0,
+                    silent_mode BOOLEAN DEFAULT 0
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS calibration_data (
+                    user_id INTEGER PRIMARY KEY,
+                    vowel_weight REAL DEFAULT 1.0,
+                    consonant_penalty REAL DEFAULT 1.0,
+                    rhythm_bonus REAL DEFAULT 1.0,
+                    is_completed BOOLEAN DEFAULT 0,
+                    history TEXT DEFAULT '[]'
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    username TEXT UNIQUE,
+                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS findings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    username TEXT,
+                    found_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            logging.info("ℹ️ Локальная база данных SQLite готова к работе")
 
+    async def get_settings(self, user_id: int) -> Dict[str, Any]:
+        default = {"check_limit": 1000, "no_mono": False, "clean_output": False, "silent_mode": False}
+        if self.is_postgres:
+            conn = await asyncpg.connect(DATABASE_URL)
+            row = await conn.fetchrow("SELECT check_limit, no_mono, clean_output, silent_mode FROM user_settings WHERE user_id = $1", user_id)
+            await conn.close()
+            return dict(row) if row else default
+        else:
+            with sqlite3.connect("bot_data.db") as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT check_limit, no_mono, clean_output, silent_mode FROM user_settings WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                return dict(row) if row else default
 
-def get_page(chat_id: int, page: int, page_size: int):
-    """page — с нуля. Возвращает список (username, score, found_at), самые новые первыми."""
-    with _lock:
-        cur = _conn.execute(
-            "SELECT username, score, found_at FROM found_usernames "
-            "WHERE chat_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-            (chat_id, page_size, page * page_size),
-        )
-        return cur.fetchall()
+    async def update_settings(self, user_id: int, key: str, value: Any):
+        if self.is_postgres:
+            conn = await asyncpg.connect(DATABASE_URL)
+            await conn.execute(f'''
+                INSERT INTO user_settings (user_id, {key}) VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET {key} = EXCLUDED.{key}
+            ''', user_id, value)
+            await conn.close()
+        else:
+            with sqlite3.connect("bot_data.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    INSERT INTO user_settings (user_id, {key}) VALUES (?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET {key} = excluded.{key}
+                ''', (user_id, value))
+                conn.commit()
 
+    async def save_finding(self, user_id: int, username: str):
+        if self.is_postgres:
+            conn = await asyncpg.connect(DATABASE_URL)
+            await conn.execute("INSERT INTO findings (user_id, username) VALUES ($1, $2)", user_id, username)
+            await conn.close()
+        else:
+            with sqlite3.connect("bot_data.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO findings (user_id, username) VALUES (?, ?)", (user_id, username))
+                conn.commit()
 
-def get_all(chat_id: int):
-    with _lock:
-        cur = _conn.execute(
-            "SELECT username, score, found_at FROM found_usernames WHERE chat_id = ? ORDER BY id DESC",
-            (chat_id,),
-        )
-        return cur.fetchall()
-
-
-def get_top(chat_id: int, limit: int = 1):
-    with _lock:
-        cur = _conn.execute(
-            "SELECT username, score FROM found_usernames WHERE chat_id = ? "
-            "ORDER BY score DESC, id DESC LIMIT ?",
-            (chat_id, limit),
-        )
-        return cur.fetchall()
+db = DatabaseManager()
